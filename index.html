@@ -1275,71 +1275,214 @@ function paProcessImage(idx){
 
 // ===== PA: Render Analysis Result =====
 function paRenderResult(ocrResults){
-  // Parse OCR text to extract questions and scores
-  // For now, use mock data based on the OCR text length
   var totalScore = parseInt(document.getElementById('paTotalScore').value) || 150;
   var subject = document.getElementById('paSubject').value;
-
-  // Try to parse questions from OCR text
+  var info = paGetStudentInfo();
+  // Prefer current score if user entered, otherwise use OCR-derived mock
   var fullText = ocrResults.map(function(r){ return r.text; }).join('\n');
   console.log('OCR Full Text:', fullText.substring(0, 500));
 
-  // For demo: use Nanjing math mock data
+  var questions = PA_MOCK_QUESTIONS[subject] || PA_MOCK_QUESTIONS['数学'];
+  // If user entered current score, scale obtained; otherwise random 55%-80%
+  var obtained = info.currentScore > 0 ? info.currentScore : Math.round(totalScore * (0.55 + Math.random()*0.25));
+  if (obtained > totalScore) obtained = totalScore;
+
   var result = {
     subject: subject,
     totalScore: totalScore,
-    obtainedScore: Math.round(totalScore * (0.55 + Math.random()*0.25)), // mock: 55%-80%
-    questions: PA_MOCK_QUESTIONS[subject] || PA_MOCK_QUESTIONS['数学']
+    obtainedScore: obtained,
+    questions: questions
   };
+  var wrongQ = questions.filter(function(q){ return q.obtained < q.score; });
+  var accuracy = ((obtained / totalScore) * 100).toFixed(1);
+  var gap = Math.max(0, info.targetScore - obtained);
 
-  var obtained = result.obtainedScore;
-  var total = result.totalScore;
-  var wrongQ = result.questions.filter(function(q){ return q.obtained < q.score; });
-  var accuracy = ((obtained / total) * 100).toFixed(1);
-
-  // Render step 3
+  // Build HTML for step 3
   var html = '';
-  html += '<div style="background:#fff;border-radius:12px;padding:18px 20px;box-shadow:0 2px 12px rgba(0,0,0,.06);margin-bottom:14px;"><h3 style="font-size:15px;font-weight:700;margin-bottom:12px;">成绩概览</h3><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">';
-  html += '<div style="background:#e8f0fe;padding:14px 10px;border-radius:12px;text-align:center;"><div style="font-size:22px;font-weight:800;color:#1a73e8;">'+total+'</div><div style="font-size:12px;color:#666;">总分</div></div>';
-  html += '<div style="background:#e6f4ea;padding:14px 10px;border-radius:12px;text-align:center;"><div style="font-size:22px;font-weight:800;color:#34a853;">'+obtained+'</div><div style="font-size:12px;color:#666;">得分</div></div>';
-  html += '<div style="background:#fef7e0;padding:14px 10px;border-radius:12px;text-align:center;"><div style="font-size:22px;font-weight:800;color:#e8730a;">'+accuracy+'%</div><div style="font-size:12px;color:#666;">正确率</div></div>';
-  html += '<div style="background:#fce8e6;padding:14px 10px;border-radius:12px;text-align:center;"><div style="font-size:22px;font-weight:800;color:#c41a1a;">'+wrongQ.length+'</div><div style="font-size:12px;color:#666;">错题数</div></div>';
+
+  // 1. Student info header
+  html += '<div class="pa-section-card">';
+  html += '<div class="pa-section-title"><span class="num">1</span>学生信息与试卷概况</div>';
+  html += '<div style="display:flex;flex-wrap:wrap;gap:18px;font-size:13px;color:#555;line-height:1.8;">';
+  html += '<div style="flex:1;min-width:200px;"><b style="color:#c41a1a">' + (info.name || '张同学') + '</b> · ' + info.grade + ' · ' + info.school + '</div>';
+  html += '<div style="flex:1;min-width:200px;">分析科目：<b>' + subject + '</b> · 总分：<b>' + totalScore + '分</b></div>';
+  html += '<div style="flex:1;min-width:200px;">分析老师：<b>' + info.teacher + '</b> · 日期：<b>' + info.date + '</b></div>';
+  html += '<div style="flex:1;min-width:200px;">当前分数：<b>' + obtained + '分</b> · 目标分数：<b>' + (info.targetScore || '-') + '分</b> · 目标大学：<b>' + info.targetSchool + '</b></div>';
   html += '</div></div>';
 
-  // Wrong questions
-  html += '<div style="background:#fff;border-radius:12px;padding:18px 20px;box-shadow:0 2px 12px rgba(0,0,0,.06);margin-bottom:14px;"><h3 style="font-size:15px;font-weight:700;margin-bottom:12px;">错题知识点分析</h3>';
-  if(wrongQ.length === 0){
-    html += '<p style="color:#999;text-align:center;padding:16px;">暂无错题记录，成绩优秀！</p>';
+  // 2. Score overview
+  html += '<div class="pa-section-card">';
+  html += '<div class="pa-section-title"><span class="num">2</span>成绩概览</div>';
+  html += '<div class="pa-score-grid">';
+  html += '<div class="pa-stat-box pa-stat-blue"><div class="val">' + totalScore + '</div><div class="lbl">试卷总分</div></div>';
+  html += '<div class="pa-stat-box pa-stat-green"><div class="val">' + obtained + '</div><div class="lbl">本次得分</div></div>';
+  html += '<div class="pa-stat-box pa-stat-yellow"><div class="val">' + accuracy + '%</div><div class="lbl">得分率</div></div>';
+  html += '<div class="pa-stat-box pa-stat-red"><div class="val">' + gap + '</div><div class="lbl">距目标差距</div></div>';
+  html += '</div></div>';
+
+  // 3. Score rate by difficulty
+  var diffStats = paCalcDifficultyStats(questions, obtained, totalScore);
+  html += '<div class="pa-section-card">';
+  html += '<div class="pa-section-title"><span class="num">3</span>得分率全景分析</div>';
+  html += '<div style="margin-bottom:14px;"><h4 style="font-size:13px;font-weight:700;margin-bottom:10px;">分难度得分率</h4>';
+  diffStats.forEach(function(d){
+    var pct = d.total > 0 ? ((d.got / d.total) * 100).toFixed(1) : 0;
+    var color = pct >= 80 ? '#34a853' : (pct >= 60 ? '#e8730a' : '#c41a1a');
+    html += '<div style="margin-bottom:10px;"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;"><span><b>' + d.level + '</b> ' + d.star + ' <span style="color:#888">' + d.desc + '</span></span><span style="color:' + color + ';font-weight:700;">' + pct + '%</span></div><div class="pa-progress"><div class="pa-progress-bar" style="width:' + pct + '%;background:' + color + '"></div></div></div>';
+  });
+  html += '</div>';
+  // 4. Question type rate
+  var typeStats = paCalcTypeStats(questions, subject);
+  html += '<div><h4 style="font-size:13px;font-weight:700;margin-bottom:10px;">分题型得分率</h4><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;">';
+  typeStats.forEach(function(t){
+    var pct = t.total > 0 ? ((t.got / t.total) * 100).toFixed(1) : 0;
+    var color = pct >= 80 ? '#34a853' : (pct >= 60 ? '#e8730a' : '#c41a1a');
+    html += '<div style="border:1px solid #eee;border-radius:10px;padding:10px;text-align:center;"><div style="font-size:16px;font-weight:800;color:' + color + '">' + pct + '%</div><div style="font-size:12px;color:#666;">' + t.type + '</div></div>';
+  });
+  html += '</div></div></div>';
+
+  // 5. Weak modules TOP4
+  var topModules = paGetTopWeakModules(wrongQ, 4);
+  html += '<div class="pa-section-card">';
+  html += '<div class="pa-section-title"><span class="num">4</span>失分点精准定位 — 薄弱知识模块 TOP' + Math.min(4, topModules.length) + '</div>';
+  if (topModules.length === 0) {
+    html += '<p style="color:#999;text-align:center;padding:16px;">暂无明显薄弱模块，继续保持优势！</p>';
   } else {
-    wrongQ.forEach(function(q){
-      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#fff5f5;border-left:4px solid #c41a1a;border-radius:0 10px 10px 0;margin-bottom:6px;"><div><span style="font-weight:700;font-size:13px;">第'+q.no+'题</span><span style="margin-left:8px;color:#555;font-size:12px;">'+q.knowledge+'</span><span style="margin-left:6px;font-size:11px;background:#fee;color:#c41a1a;padding:2px 8px;border-radius:10px;">'+q.module+'</span></div><div style="font-weight:700;color:#c41a1a;font-size:14px;">'+q.obtained+'/'+q.score+'</div></div>';
+    html += '<div style="font-size:12px;color:#888;margin-bottom:12px;">核心结论：后续补习主战场锁定“<b style="color:#c41a1a">' + topModules[0].module + '</b>”模块</div>';
+    topModules.forEach(function(m, idx){
+      html += '<div class="pa-module-row"><div><span style="display:inline-block;width:20px;height:20px;background:#c41a1a;color:#fff;border-radius:50%;text-align:center;line-height:20px;font-size:11px;font-weight:700;margin-right:8px;">' + (idx+1) + '</span><span class="name">' + m.module + '</span></div><span class="badge">' + m.count + ' 题错题</span></div>';
     });
   }
   html += '</div>';
 
-  // Weak modules
-  var wm = {};
-  wrongQ.forEach(function(q){ wm[q.module] = (wm[q.module]||0) + 1; });
-  html += '<div style="background:#fff;border-radius:12px;padding:18px 20px;box-shadow:0 2px 12px rgba(0,0,0,.06);margin-bottom:14px;"><h3 style="font-size:15px;font-weight:700;margin-bottom:12px;">知识薄弱模块</h3>';
-  var wmCount = 0;
-  for(var m in wm){
-    wmCount++;
-    html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 14px;background:#fff8e6;border-radius:10px;margin-bottom:6px;border:1px solid #ffe082;"><span style="font-weight:600;font-size:13px;">'+m+'</span><span style="font-size:12px;font-weight:600;color:#e8730a;">薄弱 ('+wm[m]+'题错题)</span></div>';
-  }
-  if(wmCount === 0){
-    html += '<p style="color:#999;text-align:center;padding:16px;">暂无明显薄弱模块</p>';
+  // 6. Wrong questions detail
+  html += '<div class="pa-section-card">';
+  html += '<div class="pa-section-title"><span class="num">5</span>错题知识点分析</div>';
+  if (wrongQ.length === 0) {
+    html += '<p style="color:#999;text-align:center;padding:16px;">暂无错题记录，成绩优秀！</p>';
+  } else {
+    wrongQ.forEach(function(q){
+      var tags = paGetReasonTags(q).map(function(t){ return '<span class="pa-tag pa-tag-red">' + t + '</span>'; }).join(' ');
+      html += '<div class="pa-weak-row"><div><span class="title">第' + q.no + '题</span><span class="meta">' + q.knowledge + '</span><span class="pa-tag pa-tag-yellow">' + q.module + '</span><div style="margin-top:4px;">' + tags + '</div></div><div class="score">' + q.obtained + '/' + q.score + '</div></div>';
+    });
   }
   html += '</div>';
 
+  // 7. Error attribution
+  html += '<div class="pa-section-card">';
+  html += '<div class="pa-section-title"><span class="num">6</span>典型错题剖析：四大核心归因</div>';
+  html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;">';
+  html += '<div style="background:#fff5f5;border-left:4px solid #c41a1a;padding:12px 14px;border-radius:0 10px 10px 0;"><b style="color:#c41a1a;font-size:13px;">☑ 知识点模糊</b><p style="font-size:12px;color:#666;margin-top:6px;">公式记错 / 核心概念理解偏差，导致无法准确作答。</p></div>';
+  html += '<div style="background:#fff8e6;border-left:4px solid #e8730a;padding:12px 14px;border-radius:0 10px 10px 0;"><b style="color:#e8730a;font-size:13px;">☑ 模型缺失</b><p style="font-size:12px;color:#666;margin-top:6px;">审题无思路，无法关联解题方法与题目条件。</p></div>';
+  html += '<div style="background:#e8f0fe;border-left:4px solid #1a73e8;padding:12px 14px;border-radius:0 10px 10px 0;"><b style="color:#1a73e8;font-size:13px;">☑ 习惯短板</b><p style="font-size:12px;color:#666;margin-top:6px;">粗心计算失误，步骤跳步严重，规范性不足。</p></div>';
+  html += '<div style="background:#e6f4ea;border-left:4px solid #34a853;padding:12px 14px;border-radius:0 10px 10px 0;"><b style="color:#34a853;font-size:13px;">☑ 综合运用弱</b><p style="font-size:12px;color:#666;margin-top:6px;">跨模块题目缺乏整合能力，方法迁移不灵活。</p></div>';
+  html += '</div></div>';
+
+  // 8. Comprehensive learning diagnosis
+  html += '<div class="pa-section-card">';
+  html += '<div class="pa-section-title"><span class="num">7</span>学情综合诊断</div>';
+  html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;font-size:13px;">';
+  html += '<div><b style="color:#c41a1a">🔸 学习能力</b><p style="color:#555;margin-top:4px;line-height:1.6;">' + info.ability + '</p></div>';
+  html += '<div><b style="color:#c41a1a">🔸 学习习惯</b><p style="color:#555;margin-top:4px;line-height:1.6;">' + info.habit + '</p></div>';
+  html += '<div><b style="color:#c41a1a">🔸 在校情况</b><p style="color:#555;margin-top:4px;line-height:1.6;">' + info.schoolStatus + '</p></div>';
+  html += '<div><b style="color:#c41a1a">🔸 在家情况</b><p style="color:#555;margin-top:4px;line-height:1.6;">' + info.homeStatus + '</p></div>';
+  html += '<div><b style="color:#c41a1a">🔸 学习时长</b><p style="color:#555;margin-top:4px;line-height:1.6;">' + info.studyHours + '</p></div>';
+  html += '<div><b style="color:#c41a1a">🔸 学习意愿</b><p style="color:#555;margin-top:4px;line-height:1.6;">' + info.motivation + '</p></div>';
+  html += '</div>';
+  html += '<div style="margin-top:12px;padding:10px 14px;background:#f8f9fa;border-radius:8px;font-size:13px;"><b>辅导期望：</b>' + info.expectation + '</div>';
+  html += '</div>';
+
   // Buttons
-  html += '<div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:14px;"><button onclick="paShowStep4()" style="padding:10px 28px;background:linear-gradient(135deg,#c41a1a,#e63946);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;box-shadow:0 4px 12px rgba(196,26,26,.3);">查看提分方案</button><button onclick="paReset()" style="padding:10px 20px;border:2px solid #ddd;border-radius:10px;background:#fff;cursor:pointer;font-size:14px;font-weight:500;">重新分析</button></div>';
+  html += '<div class="pa-export-btns"><button onclick="paShowStep4()" class="btn btn-primary">查看提分方案</button><button onclick="paReset()" class="btn btn-secondary">重新分析</button></div>';
 
   document.getElementById('pa-step3').innerHTML = html;
-
-  // Store result for step 4
-  window._paResult = { result: result, wrongQ: wrongQ, wm: wm };
+  window._paResult = { result: result, wrongQ: wrongQ, info: info };
 }
 
+// ===== Helpers for paper analysis =====
+function paGetStudentInfo(){
+  var today = new Date().toLocaleDateString('zh-CN');
+  return {
+    name: document.getElementById('paStudentName').value || '张同学',
+    school: document.getElementById('paSchool').value || '-',
+    grade: document.getElementById('paGrade').value || '高中',
+    teacher: document.getElementById('paTeacher').value || '李老师',
+    date: document.getElementById('paDate').value || today,
+    subject: document.getElementById('paSubject').value || '数学',
+    totalScore: parseInt(document.getElementById('paTotalScore').value) || 150,
+    currentScore: parseInt(document.getElementById('paCurrentScore').value) || 0,
+    targetScore: parseInt(document.getElementById('paTargetScore').value) || 0,
+    targetSchool: document.getElementById('paTargetSchool').value || '-',
+    ability: document.getElementById('paAbility').value || '中等水平，有提升空间',
+    habit: document.getElementById('paHabit').value || '能完成作业，但缺乏主动复习',
+    schoolStatus: document.getElementById('paSchoolStatus').value || '听课认真，但吸收效率一般',
+    homeStatus: document.getElementById('paHomeStatus').value || '能独立完成作业，但缺少拓展',
+    studyHours: document.getElementById('paStudyHours').value || '5-10小时',
+    motivation: document.getElementById('paMotivation').value || '有提升意愿，但遇难题易畏难',
+    expectation: document.getElementById('paExpectation').value || '希望系统提升，突破薄弱模块'
+  };
+}
+function paGetDifficultyLevel(score){
+  if (score <= 3) return { level: '基础题', star: '★', desc: '知识记忆与直接应用' };
+  if (score <= 8) return { level: '中档题', star: '★★~★★★', desc: '知识点综合与逻辑推理' };
+  if (score <= 12) return { level: '中高档题', star: '★★★★', desc: '复杂综合与方法迁移' };
+  return { level: '难题', star: '★★★★★', desc: '创新思维与深度探究' };
+}
+function paGetQuestionType(no, subject){
+  if (subject === '语文') {
+    if (no <= 5) return '现代文阅读';
+    if (no <= 8) return '古诗文阅读';
+    if (no <= 9) return '语言文字运用';
+    return '写作';
+  }
+  if (subject === '英语') {
+    if (no <= 4) return '阅读理解';
+    if (no <= 6) return '语言知识运用';
+    return '写作';
+  }
+  if (no <= 8) return '选择';
+  if (no <= 12) return '填空';
+  return '解答';
+}
+function paCalcDifficultyStats(questions, obtained, total){
+  var levels = ['基础题','中档题','中高档题','难题'];
+  var stats = {};
+  levels.forEach(function(l){ stats[l] = { level: l, star: '', desc: '', total: 0, got: 0 }; });
+  questions.forEach(function(q){
+    var d = paGetDifficultyLevel(q.score);
+    stats[d.level].star = d.star;
+    stats[d.level].desc = d.desc;
+    stats[d.level].total += q.score;
+    stats[d.level].got += q.obtained;
+  });
+  return levels.map(function(l){ return stats[l]; });
+}
+function paCalcTypeStats(questions, subject){
+  var stats = {};
+  questions.forEach(function(q){
+    var t = paGetQuestionType(q.no, subject);
+    if (!stats[t]) stats[t] = { type: t, total: 0, got: 0 };
+    stats[t].total += q.score;
+    stats[t].got += q.obtained;
+  });
+  return Object.values(stats);
+}
+function paGetTopWeakModules(wrongQ, n){
+  var wm = {};
+  wrongQ.forEach(function(q){ wm[q.module] = (wm[q.module] || 0) + 1; });
+  var arr = Object.keys(wm).map(function(m){ return { module: m, count: wm[m] }; });
+  arr.sort(function(a, b){ return b.count - a.count; });
+  return arr.slice(0, n);
+}
+function paGetReasonTags(q){
+  var ratio = q.obtained / q.score;
+  if (q.obtained === 0) return ['知识点模糊'];
+  if (ratio < 0.5) return ['模型缺失'];
+  if (ratio < 0.8) return ['习惯短板'];
+  return ['综合运用弱'];
+}
+
+// ===== PA: Step 4 - Suggestions =====
 // ===== PA: Step 4 - Suggestions =====
 function paShowStep4(){
   document.getElementById('pa-step3').style.display = 'none';
@@ -1349,9 +1492,12 @@ function paShowStep4(){
   if(!data) return;
 
   var result = data.result;
-  var wm = data.wm;
+  var info = data.info;
+  var wrongQ = data.wrongQ;
   var totalScore = result.totalScore;
   var obtained = result.obtainedScore;
+  var gap = Math.max(0, info.targetScore - obtained);
+  var topModules = paGetTopWeakModules(wrongQ, 4);
 
   var modMap = {
     '集合与常用逻辑用语':{h:2,s:'集合考点简单，建议限时训练确保不丢分。重点掌握集合的交并补运算。'},
@@ -1370,58 +1516,171 @@ function paShowStep4(){
   };
 
   var ms = [], totalH = 0;
-  for(var m2 in wm){
-    var info = modMap[m2] || {h:3,s:'建议系统复习该模块基础知识，加强典型题训练。'};
-    ms.push({module:m2, hours:info.h, suggestion:info.s});
-    totalH += info.h;
-  }
-  if(ms.length===0){
+  if (topModules.length === 0) {
     ms = [{module:'整体提升',hours:10,suggestion:'当前成绩较好，建议保持优势同时查漏补缺，重点突破压轴题。'}];
     totalH = 10;
+  } else {
+    topModules.forEach(function(m){
+      var inf = modMap[m.module] || {h:3,s:'建议系统复习该模块基础知识，加强典型题训练。'};
+      ms.push({module:m.module, hours:inf.h, suggestion:inf.s});
+      totalH += inf.h;
+    });
   }
   var target = Math.min(obtained + Math.round(totalH * 0.8), totalScore);
   var weeks = Math.ceil(totalH / 3); // 3 hours/week
+  var freq = '每周' + (weeks > 0 ? Math.min(3, Math.ceil(totalH/weeks)) : 3) + '次 / 共' + totalH + '小时';
 
   var html = '';
-  html += '<div style="background:#fff;border-radius:12px;padding:18px 20px;box-shadow:0 2px 12px rgba(0,0,0,.06);margin-bottom:14px;"><h3 style="font-size:15px;font-weight:700;margin-bottom:16px;text-align:center;">个性化提分方案</h3>';
 
-  // Hour plan
-  html += '<div style="margin-bottom:16px;"><h4 style="font-size:14px;font-weight:700;margin-bottom:8px;">课时规划建议</h4>';
-  html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;text-align:center;">';
-  html += '<div style="background:#e8f0fe;padding:14px 10px;border-radius:12px;"><div style="font-size:22px;font-weight:800;color:#1a73e8;">'+totalH+'</div><div style="font-size:12px;color:#666;">建议总课时</div></div>';
-  html += '<div style="background:#e6f4ea;padding:14px 10px;border-radius:12px;"><div style="font-size:22px;font-weight:800;color:#34a853;">'+target+'</div><div style="font-size:12px;color:#666;">目标分数</div></div>';
-  html += '<div style="background:#fef7e0;padding:14px 10px;border-radius:12px;"><div style="font-size:22px;font-weight:800;color:#e8730a;">'+weeks+'</div><div style="font-size:12px;color:#666;">预计周期(周)</div></div>';
+  // 1. Exam situation insight
+  html += '<div class="pa-section-card">';
+  html += '<div class="pa-section-title"><span class="num">1</span>考情透视：知己知彼，掌握格局</div>';
+  html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:14px;">';
+  html += '<div style="background:#f8f9fa;padding:12px 14px;border-radius:10px;"><b style="font-size:13px;color:#c41a1a">命题趋势</b><p style="font-size:12px;color:#666;margin-top:6px;line-height:1.6;">' + info.subject + '学科强调知识点交叉融合，注重新情境应用与综合能力考查。</p></div>';
+  html += '<div style="background:#f8f9fa;padding:12px 14px;border-radius:10px;"><b style="font-size:13px;color:#c41a1a">核心策略</b><p style="font-size:12px;color:#666;margin-top:6px;line-height:1.6;">基础题30%保分 + 中档题60%突破 + 难题10%量力 = 高效提分</p></div>';
+  html += '<div style="background:#f8f9fa;padding:12px 14px;border-radius:10px;"><b style="font-size:13px;color:#c41a1a">当前定位</b><p style="font-size:12px;color:#666;margin-top:6px;line-height:1.6;">得分率' + ((obtained/totalScore)*100).toFixed(1) + '%，距目标差' + gap + '分，重点提升空间明确。</p></div>';
+  html += '</div>';
+  html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;text-align:center;">';
+  html += '<div style="border:1px solid #e6f4ea;border-radius:10px;padding:12px;"><div style="font-size:18px;font-weight:800;color:#34a853;">30%</div><div style="font-size:12px;color:#666;">基础题 · 保分区</div><div style="font-size:11px;color:#888;">必须全部拿下</div></div>';
+  html += '<div style="border:1px solid #fff8e6;border-radius:10px;padding:12px;"><div style="font-size:18px;font-weight:800;color:#e8730a;">60%</div><div style="font-size:12px;color:#666;">中档题 · 分水岭</div><div style="font-size:11px;color:#888;">提分最大潜力区</div></div>';
+  html += '<div style="border:1px solid #fce8e6;border-radius:10px;padding:12px;"><div style="font-size:18px;font-weight:800;color:#c41a1a;">10%</div><div style="font-size:12px;color:#666;">难题 · 拔高区</div><div style="font-size:11px;color:#888;">顶尖学生冲刺</div></div>';
   html += '</div></div>';
 
-  // Module suggestions
-  html += '<div style="margin-bottom:16px;"><h4 style="font-size:14px;font-weight:700;margin-bottom:8px;">分模块训练建议</h4>';
-  ms.forEach(function(item){
-    html += '<div style="border:1px solid #eee;border-radius:10px;padding:12px 14px;margin-bottom:8px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><span style="font-weight:700;font-size:13px;">'+item.module+'</span><span style="font-size:11px;background:#c41a1a;color:#fff;padding:2px 10px;border-radius:12px;">'+item.hours+'课时</span></div><p style="font-size:12px;color:#666;line-height:1.6;">'+item.suggestion+'</p></div>';
+  // 2. Hour plan summary
+  html += '<div class="pa-section-card">';
+  html += '<div class="pa-section-title"><span class="num">2</span>' + (info.name || '张同学') + '专属提分课程方案</div>';
+  html += '<div class="pa-score-grid" style="margin-bottom:16px;">';
+  html += '<div class="pa-stat-box pa-stat-blue"><div class="val">' + totalH + '</div><div class="lbl">建议总课时</div></div>';
+  html += '<div class="pa-stat-box pa-stat-green"><div class="val">' + target + '</div><div class="lbl">目标分数</div></div>';
+  html += '<div class="pa-stat-box pa-stat-yellow"><div class="val">' + weeks + '</div><div class="lbl">预计周期(周)</div></div>';
+  html += '<div class="pa-stat-box pa-stat-red"><div class="val">' + (gap > 0 ? '-' + gap : '0') + '</div><div class="lbl">目标差距</div></div>';
+  html += '</div>';
+  html += '<div style="font-size:13px;color:#555;margin-bottom:8px;"><b>上课频率：</b>' + freq + '</div>';
+  html += '<div style="font-size:13px;color:#555;"><b>辅导模式：</b>资深名师 · 一对一精准辅导 · 定制化提分</div></div>';
+
+  // 3. Three-stage timeline
+  html += '<div class="pa-section-card">';
+  html += '<div class="pa-section-title"><span class="num">3</span>科学规划三步走，实现稳步提升</div>';
+  html += '<div class="pa-timeline">';
+  html += '<div class="pa-timeline-item"><div class="phase">短期目标（1-2个月）：补齐基础短板</div><div class="goal">🎯 目标：基础题得分率稳定在90%以上</div><div style="font-size:12px;color:#666;">重点攻克：' + (ms[0] ? ms[0].module : '核心知识点') + '等基础概念，夯实底层逻辑。</div></div>';
+  html += '<div class="pa-timeline-item"><div class="phase">中期目标（3-6个月）：强化解题模型</div><div class="goal">🎯 目标：中档题得分率提升至70%，总分提升20-35分</div><div style="font-size:12px;color:#666;">重点突破：中档题解题思路与模型构建，提升综合运用能力。</div></div>';
+  html += '<div class="pa-timeline-item"><div class="phase">长期目标（冲刺阶段）：冲刺高分</div><div class="goal">🎯 目标：达到目标学校预估线，实现分数最大化</div><div style="font-size:12px;color:#666;">重点冲刺：高档题步骤分与压轴题突破，查漏补缺完善知识体系。</div></div>';
+  html += '</div></div>';
+
+  // 4. Detailed course plan
+  html += '<div class="pa-section-card">';
+  html += '<div class="pa-section-title"><span class="num">4</span>分阶段核心课时规划</div>';
+  var phaseHours = [
+    {name:'第一阶段：基础夯实', ratio:0.35, goal:'正确率>90%', content:'夯实' + (ms[0] ? ms[0].module : '核心模块') + '基础，构建完整知识框架，确保基础题不丢分。'},
+    {name:'第二阶段：中档提升', ratio:0.45, goal:'得分率提升至70%', content:'强化' + (ms[1] ? ms[1].module : '中档模块') + '解题模型，掌握常见题型套路，提升解题速度。'},
+    {name:'第三阶段：强化冲刺', ratio:0.20, goal:'形成完整知识体系', content:'难点突破、规范答题、限时训练，全面提升应试能力。'}
+  ];
+  phaseHours.forEach(function(p){
+    var h = Math.round(totalH * p.ratio);
+    html += '<div style="border:1px solid #eee;border-radius:10px;padding:12px 14px;margin-bottom:8px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><span style="font-weight:700;font-size:13px;">' + p.name + '</span><span class="pa-tag pa-tag-red">' + h + '课时</span></div><div style="font-size:12px;color:#666;margin-bottom:4px;"><b>目标：</b>' + p.goal + '</div><div style="font-size:12px;color:#666;line-height:1.6;"><b>内容：</b>' + p.content + '</div></div>';
   });
   html += '</div>';
 
-  // Tips
+  // 5. Module suggestions
+  html += '<div class="pa-section-card">';
+  html += '<div class="pa-section-title"><span class="num">5</span>分模块训练建议</div>';
+  ms.forEach(function(item){
+    html += '<div style="border:1px solid #eee;border-radius:10px;padding:12px 14px;margin-bottom:8px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><span style="font-weight:700;font-size:13px;">' + item.module + '</span><span style="font-size:11px;background:#c41a1a;color:#fff;padding:2px 10px;border-radius:12px;">' + item.hours + '课时</span></div><p style="font-size:12px;color:#666;line-height:1.6;">' + item.suggestion + '</p></div>';
+  });
+  html += '</div>';
+
+  // 6. Tips
   var tips = ['优先攻克高频考点，确保基础分不丢','建立错题本，定期回顾易错知识点','限时训练，提高解题速度和准确率','每周至少完成2套真题或模拟题','针对薄弱模块进行专项突破训练'];
-  html += '<div style="margin-bottom:16px;"><h4 style="font-size:14px;font-weight:700;margin-bottom:8px;">提分攻略</h4><ul style="list-style:none;padding:0;">';
+  html += '<div class="pa-section-card">';
+  html += '<div class="pa-section-title"><span class="num">6</span>提分攻略</div>';
+  html += '<ul style="list-style:none;padding:0;">';
   tips.forEach(function(t,i){
-    html += '<li style="display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:13px;color:#444;"><span style="width:22px;height:22px;background:#34a853;color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;">'+(i+1)+'</span>'+t+'</li>';
+    html += '<li style="display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:13px;color:#444;"><span style="width:22px;height:22px;background:#34a853;color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;">' + (i+1) + '</span>' + t + '</li>';
   });
   html += '</ul></div>';
 
-  // OCR raw text (for reference)
-  if(paOcrResults.length > 0){
-    html += '<div style="margin-bottom:16px;"><h4 style="font-size:14px;font-weight:700;margin-bottom:8px;">OCR识别文本（参考）</h4>';
-    html += '<div style="background:#f8f9fa;padding:12px 14px;border-radius:10px;font-size:12px;color:#555;max-height:150px;overflow-y:auto;white-space:pre-wrap;">';
-    html += paOcrResults.map(function(r){ return r.text.substring(0, 500); }).join('\n---\n');
-    html += '</div></div>';
-  }
-
+  // 7. Case studies
+  html += '<div class="pa-section-card">';
+  html += '<div class="pa-section-title"><span class="num">7</span>案例见证：他们也曾遇到同样的问题</div>';
+  var cases = [
+    {name:'李同学', avatar:'李', desc:'高二数学，原先80-90分', plan:'基础夯实 + 中档题专题训练', result:'高考数学128分，总分+35+'},
+    {name:'王同学', avatar:'王', desc:'高三数学，稳定120-130分', plan:'思维训练 + 压轴题专项攻克', result:'高考数学145分，全省前500'},
+    {name:'张同学', avatar:'张', desc:'物理优异，数学拖后腿', plan:'跨学科迁移 + 强化数学工具应用', result:'数学提升至115分，考入理想专业'}
+  ];
+  cases.forEach(function(c){
+    html += '<div class="pa-case"><div class="avatar">' + c.avatar + '</div><div><div class="title">' + c.desc + '</div><div class="desc">方案：' + c.plan + '</div><div class="result">成果：' + c.result + '</div></div></div>';
+  });
   html += '</div>';
 
-  // Buttons
-  html += '<div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;"><button onclick="window.print()" style="padding:10px 28px;background:linear-gradient(135deg,#c41a1a,#e63946);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;box-shadow:0 4px 12px rgba(196,26,26,.3);">打印报告</button><button onclick="paReset()" style="padding:10px 20px;border:2px solid #ddd;border-radius:10px;background:#fff;cursor:pointer;font-size:14px;font-weight:500;">分析新试卷</button></div>';
+  // 8. OCR raw text
+  if(paOcrResults.length > 0){
+    html += '<div class="pa-section-card">';
+    html += '<div class="pa-section-title"><span class="num">8</span>OCR识别文本（参考）</div>';
+    html += '<div class="pa-ocr-box">' + paOcrResults.map(function(r){ return r.text.substring(0, 500); }).join('\n---\n') + '</div></div>';
+  }
+
+  // Export buttons
+  html += '<div class="pa-export-btns"><button onclick="paPrintReport()" class="btn btn-primary">打印 / 保存PDF</button><button onclick="paExportWord()" class="btn btn-primary" style="background:linear-gradient(135deg,#1a73e8,#4285f4);">导出Word报告</button><button onclick="paReset()" class="btn btn-secondary">分析新试卷</button></div>';
 
   document.getElementById('pa-step4').innerHTML = html;
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+
+// ===== Export helpers =====
+function paPrintReport(){
+  // Ensure analysis page is visible and scroll to report before print
+  document.getElementById('page-analysis').style.display = 'block';
+  document.getElementById('page-dashboard').style.display = 'none';
+  setTimeout(function(){ window.print(); }, 300);
+}
+function paExportWord(){
+  var data = window._paResult;
+  if(!data) return alert('请先完成试卷分析');
+  var info = data.info;
+  var result = data.result;
+  var wrongQ = data.wrongQ;
+  var topModules = paGetTopWeakModules(wrongQ, 4);
+  var html = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><title>试卷分析报告</title><style>body{font-family:"Microsoft YaHei",sans-serif;font-size:14px;line-height:1.6;color:#333}h1{font-size:20px;color:#c41a1a}h2{font-size:16px;color:#c41a1a;border-left:4px solid #c41a1a;padding-left:8px}table{border-collapse:collapse;width:100%;margin:10px 0}td,th{border:1px solid #ccc;padding:6px;font-size:12px}th{background:#f0f0f0}.red{color:#c41a1a}.box{background:#f8f9fa;padding:10px;margin:8px 0;border-radius:6px}</style></head><body>';
+  html += '<h1>' + (info.name || '张同学') + '试卷分析报告</h1>';
+  html += '<p><b>学大教育 · 一对一个性化辅导</b></p>';
+  html += '<h2>一、学员情况</h2>';
+  html += '<table><tr><th>学生姓名</th><td>' + info.name + '</td><th>辅导科目</th><td>' + info.subject + '</td></tr>';
+  html += '<tr><th>年级/学段</th><td>' + info.grade + '</td><th>所在学校</th><td>' + info.school + '</td></tr>';
+  html += '<tr><th>分析老师</th><td>' + info.teacher + '</td><th>分析日期</th><td>' + info.date + '</td></tr>';
+  html += '<tr><th>当前分数</th><td>' + result.obtainedScore + '</td><th>目标分数</th><td>' + (info.targetScore || '-') + '</td></tr>';
+  html += '<tr><th>目标大学</th><td>' + info.targetSchool + '</td><th>辅导期望</th><td>' + info.expectation + '</td></tr></table>';
+  html += '<h2>二、试卷整体得分概述</h2>';
+  html += '<p>试卷总分：<b>' + result.totalScore + '</b>，本次得分：<b>' + result.obtainedScore + '</b>，得分率：<b>' + ((result.obtainedScore/result.totalScore)*100).toFixed(1) + '%</b></p>';
+  html += '<h2>三、知识模块失分诊断</h2>';
+  if(topModules.length === 0){
+    html += '<p>暂无明显薄弱模块。</p>';
+  } else {
+    html += '<table><tr><th>薄弱模块</th><th>错题数</th></tr>';
+    topModules.forEach(function(m){ html += '<tr><td>' + m.module + '</td><td>' + m.count + '</td></tr>'; });
+    html += '</table>';
+  }
+  html += '<h2>四、学生学情分析</h2>';
+  html += '<div class="box"><b>学习能力：</b>' + info.ability + '</div>';
+  html += '<div class="box"><b>学习习惯：</b>' + info.habit + '</div>';
+  html += '<div class="box"><b>在校情况：</b>' + info.schoolStatus + '</div>';
+  html += '<div class="box"><b>在家情况：</b>' + info.homeStatus + '</div>';
+  html += '<div class="box"><b>学习时长：</b>' + info.studyHours + '</div>';
+  html += '<div class="box"><b>学习意愿：</b>' + info.motivation + '</div>';
+  html += '<h2>五、分阶段核心课时规划建议</h2>';
+  html += '<table><tr><th>阶段</th><th>课时</th><th>核心目标</th></tr>';
+  html += '<tr><td>基础夯实</td><td>35%</td><td>补齐基础短板，基础题得分率90%以上</td></tr>';
+  html += '<tr><td>中档提升</td><td>45%</td><td>强化解题模型，中档题得分率70%</td></tr>';
+  html += '<tr><td>强化冲刺</td><td>20%</td><td>冲刺高分，规范答题与限时训练</td></tr></table>';
+  html += '<p>本报告由学大教育试卷智能分析系统生成，仅供教学参考。</p>';
+  html += '</body></html>';
+  var blob = new Blob(['\ufeff', html], {type:'application/msword'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = (info.name || '学生') + '试卷分析报告.doc';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
 }
 
 function paReset(){
@@ -1493,6 +1752,12 @@ var PA_MOCK_QUESTIONS = {
 
 // Initialize library and upload when DOM is ready
 function initApp(){
+  // Set default date for analysis page
+  var dateInput = document.getElementById('paDate');
+  if(dateInput && !dateInput.value){
+    var today = new Date();
+    dateInput.value = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-' + String(today.getDate()).padStart(2,'0');
+  }
   initDB(function(){
     updateFilterOptions();
     renderLibrary();
@@ -1516,34 +1781,132 @@ if(document.readyState === 'loading'){
     <p style="opacity:.85;font-size:13px;">上传试卷图片，AI自动识别对错 . 匹配双向细目表 . 生成个性化提分方案</p>
   </div>
 
-  <!-- Step 1: Select info + Upload -->
+  <!-- Step 1: Student info + exam info + Upload -->
   <div id="pa-step1">
-    <div style="background:#fff;border-radius:12px;padding:18px 20px;box-shadow:0 2px 12px rgba(0,0,0,.06);margin-bottom:14px;">
-      <h3 style="font-size:15px;font-weight:700;margin-bottom:12px;">第一步：选择试卷信息</h3>
-      <div style="display:flex;gap:14px;flex-wrap:wrap;">
-        <div style="flex:1;min-width:140px;">
-          <label style="display:block;font-size:13px;color:#666;margin-bottom:4px;font-weight:500;">学科</label>
-          <select id="paSubject" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:8px;font-size:14px;">
-            <option>数学</option><option>语文</option><option>英语</option><option>物理</option><option>化学</option><option>生物</option><option>历史</option><option>地理</option><option>政治</option>
-          </select>
+    <div class="pa-section-card">
+      <div class="pa-section-title"><span class="num">1</span>学生基本情况</div>
+      <div class="pa-form-grid">
+        <div class="pa-form-field">
+          <label>学生姓名</label>
+          <input type="text" id="paStudentName" placeholder="例如：张同学">
         </div>
-        <div style="flex:1;min-width:140px;">
-          <label style="display:block;font-size:13px;color:#666;margin-bottom:4px;font-weight:500;">年级</label>
-          <select id="paGrade" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:8px;font-size:14px;">
+        <div class="pa-form-field">
+          <label>所在学校</label>
+          <input type="text" id="paSchool" placeholder="例如：XX中学">
+        </div>
+        <div class="pa-form-field">
+          <label>年级 / 学段</label>
+          <select id="paGrade">
             <option>高中</option><option>初中</option><option>小学</option>
           </select>
         </div>
-        <div style="flex:1;min-width:140px;">
-          <label style="display:block;font-size:13px;color:#666;margin-bottom:4px;font-weight:500;">总分</label>
-          <select id="paTotalScore" style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:8px;font-size:14px;">
-            <option value="150">150分</option><option value="120">120分</option><option value="100">100分</option>
-          </select>
+        <div class="pa-form-field">
+          <label>分析老师</label>
+          <input type="text" id="paTeacher" placeholder="例如：李老师">
+        </div>
+        <div class="pa-form-field">
+          <label>分析日期</label>
+          <input type="date" id="paDate">
         </div>
       </div>
     </div>
 
-    <div style="background:#fff;border-radius:12px;padding:18px 20px;box-shadow:0 2px 12px rgba(0,0,0,.06);margin-bottom:14px;">
-      <h3 style="font-size:15px;font-weight:700;margin-bottom:12px;">第二步：上传试卷图片</h3>
+    <div class="pa-section-card">
+      <div class="pa-section-title"><span class="num">2</span>考试与目标信息</div>
+      <div class="pa-form-grid">
+        <div class="pa-form-field">
+          <label>分析科目</label>
+          <select id="paSubject">
+            <option>数学</option><option>语文</option><option>英语</option><option>物理</option><option>化学</option><option>生物</option><option>历史</option><option>地理</option><option>政治</option>
+          </select>
+        </div>
+        <div class="pa-form-field">
+          <label>试卷总分</label>
+          <select id="paTotalScore">
+            <option value="150">150分</option><option value="120">120分</option><option value="100">100分</option>
+          </select>
+        </div>
+        <div class="pa-form-field">
+          <label>当前分数</label>
+          <input type="number" id="paCurrentScore" placeholder="例如：85">
+        </div>
+        <div class="pa-form-field">
+          <label>目标分数</label>
+          <input type="number" id="paTargetScore" placeholder="例如：130">
+        </div>
+        <div class="pa-form-field">
+          <label>目标大学 / 目标</label>
+          <input type="text" id="paTargetSchool" placeholder="例如：北京大学">
+        </div>
+      </div>
+    </div>
+
+    <div class="pa-section-card">
+      <div class="pa-section-title"><span class="num">3</span>学情诊断</div>
+      <div class="pa-form-grid">
+        <div class="pa-form-field">
+          <label>学习能力</label>
+          <select id="paAbility">
+            <option>基础薄弱，需系统重建</option>
+            <option>中等水平，有提升空间</option>
+            <option>基础较好，需突破瓶颈</option>
+            <option>优秀，需冲刺拔尖</option>
+          </select>
+        </div>
+        <div class="pa-form-field">
+          <label>学习习惯</label>
+          <select id="paHabit">
+            <option>缺乏错题整理习惯</option>
+            <option>能完成作业，但缺乏主动复习</option>
+            <option>有整理错题习惯，但方法不够科学</option>
+            <option>学习习惯良好，自主性强</option>
+          </select>
+        </div>
+        <div class="pa-form-field">
+          <label>在校情况</label>
+          <select id="paSchoolStatus">
+            <option>听课认真，但吸收效率一般</option>
+            <option>听课容易走神，重点把握不准</option>
+            <option>能跟上课堂，但课后消化不足</option>
+            <option>课堂表现优秀，能举一反三</option>
+          </select>
+        </div>
+        <div class="pa-form-field">
+          <label>在家情况</label>
+          <select id="paHomeStatus">
+            <option>作业完成较被动，需督促</option>
+            <option>能独立完成作业，但缺少拓展</option>
+            <option>学习主动，但缺乏针对性训练</option>
+            <option>主动学习，且能自我检测</option>
+          </select>
+        </div>
+        <div class="pa-form-field">
+          <label>每周学习时长</label>
+          <select id="paStudyHours">
+            <option>5小时以下</option>
+            <option>5-10小时</option>
+            <option>10-15小时</option>
+            <option>15小时以上</option>
+          </select>
+        </div>
+        <div class="pa-form-field">
+          <label>学习意愿</label>
+          <select id="paMotivation">
+            <option>有提升意愿，但遇难题易畏难</option>
+            <option>愿意配合，目标较明确</option>
+            <option>主动性强，希望系统提升</option>
+            <option>目标清晰，冲刺决心强</option>
+          </select>
+        </div>
+        <div class="pa-form-field" style="grid-column:1/-1">
+          <label>辅导期望 / 备注</label>
+          <input type="text" id="paExpectation" placeholder="例如：希望期末达到120分，重点突破函数和解析几何">
+        </div>
+      </div>
+    </div>
+
+    <div class="pa-section-card">
+      <div class="pa-section-title"><span class="num">4</span>上传试卷图片</div>
       <div id="paUploadArea" style="border:2px dashed #ddd;border-radius:14px;padding:36px;text-align:center;background:#fafafa;cursor:pointer;transition:all .25s;">
         <div style="font-size:48px;margin-bottom:10px;">&#x1F4F8;</div>
         <p style="color:#555;font-size:14px;margin:4px 0;"><b>拖拽图片到此处，或点击选择文件</b></p>
@@ -1582,6 +1945,79 @@ if(document.readyState === 'loading'){
 .nav-tab:hover{color:#fff !important;background:rgba(255,255,255,.1)}
 .nav-tab.active{color:#fff !important}
 @media(max-width:600px){.nav-tabs{margin-left:8px !important}.nav-tab{padding:10px 12px !important;font-size:13px !important;}}
+
+/* ===== 试卷分析页面新增样式 ===== */
+.pa-form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px}
+.pa-form-field{display:flex;flex-direction:column;gap:4px}
+.pa-form-field label{font-size:12px;color:#666;font-weight:500}
+.pa-form-field input,.pa-form-field select{width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:8px;font-size:14px;background:#fff;color:#333}
+body.dark .pa-form-field input,body.dark .pa-form-field select{background:#1a1a2e;border-color:#4a4a6a;color:#e0e0e0}
+.pa-section-card{background:#fff;border-radius:12px;padding:18px 20px;box-shadow:0 2px 12px rgba(0,0,0,.06);margin-bottom:14px}
+body.dark .pa-section-card{background:#252542}
+.pa-section-title{font-size:15px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.pa-section-title .num{width:24px;height:24px;background:linear-gradient(135deg,#c41a1a,#e63946);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+.pa-score-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.pa-stat-box{padding:14px 10px;border-radius:12px;text-align:center}
+.pa-stat-box .val{font-size:22px;font-weight:800}
+.pa-stat-box .lbl{font-size:12px;color:#666;margin-top:4px}
+body.dark .pa-stat-box .lbl{color:#aaa}
+.pa-stat-blue{background:#e8f0fe;color:#1a73e8}
+.pa-stat-green{background:#e6f4ea;color:#34a853}
+.pa-stat-yellow{background:#fef7e0;color:#e8730a}
+.pa-stat-red{background:#fce8e6;color:#c41a1a}
+.pa-tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600}
+.pa-tag-red{background:#fee;color:#c41a1a}
+.pa-tag-yellow{background:#fff8e6;color:#e8730a}
+.pa-tag-green{background:#e6f4ea;color:#34a853}
+.pa-progress{height:8px;background:#f0f0f0;border-radius:4px;overflow:hidden;margin-top:6px}
+body.dark .pa-progress{background:#3a3a5a}
+.pa-progress-bar{height:100%;border-radius:4px}
+.pa-weak-row{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#fff5f5;border-left:4px solid #c41a1a;border-radius:0 10px 10px 0;margin-bottom:6px}
+.pa-weak-row .title{font-weight:700;font-size:13px}
+.pa-weak-row .meta{margin-left:8px;color:#555;font-size:12px}
+.pa-weak-row .score{font-weight:700;color:#c41a1a;font-size:14px}
+.pa-module-row{display:flex;justify-content:space-between;align-items:center;padding:8px 14px;background:#fff8e6;border-radius:10px;margin-bottom:6px;border:1px solid #ffe082}
+.pa-module-row .name{font-weight:600;font-size:13px}
+.pa-module-row .badge{font-size:12px;font-weight:600;color:#e8730a}
+.pa-timeline{position:relative;padding-left:20px}
+.pa-timeline::before{content:'';position:absolute;left:6px;top:4px;bottom:4px;width:2px;background:#e0e0e0}
+body.dark .pa-timeline::before{background:#4a4a6a}
+.pa-timeline-item{position:relative;margin-bottom:16px}
+.pa-timeline-item::before{content:'';position:absolute;left:-18px;top:4px;width:12px;height:12px;border-radius:50%;background:#c41a1a;border:2px solid #fff}
+body.dark .pa-timeline-item::before{border-color:#252542}
+.pa-timeline-item .phase{font-size:13px;font-weight:700;color:#c41a1a}
+.pa-timeline-item .goal{font-size:12px;color:#666;margin:4px 0}
+body.dark .pa-timeline-item .goal{color:#aaa}
+.pa-case{display:flex;gap:12px;margin-bottom:12px;padding:12px;background:#f8f9fa;border-radius:10px}
+body.dark .pa-case{background:#1a1a2e}
+.pa-case .avatar{width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,#c41a1a,#e63946);color:#fff;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;flex-shrink:0}
+.pa-case .title{font-size:13px;font-weight:700}
+.pa-case .desc{font-size:12px;color:#666;margin-top:2px}
+body.dark .pa-case .desc{color:#aaa}
+.pa-case .result{font-size:12px;color:#c41a1a;font-weight:700;margin-top:4px}
+body.dark .pa-case .result{color:#ff6b6b}
+.pa-export-btns{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:14px 0}
+.pa-export-btns .btn{padding:10px 22px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;border:none}
+.pa-export-btns .btn-primary{background:linear-gradient(135deg,#c41a1a,#e63946);color:#fff;box-shadow:0 4px 12px rgba(196,26,26,.3)}
+.pa-export-btns .btn-secondary{background:#fff;border:2px solid #ddd;color:#333}
+body.dark .pa-export-btns .btn-secondary{background:#252542;border-color:#4a4a6a;color:#e0e0e0}
+.pa-ocr-box{background:#f8f9fa;padding:12px 14px;border-radius:10px;font-size:12px;color:#555;max-height:150px;overflow-y:auto;white-space:pre-wrap}
+body.dark .pa-ocr-box{background:#1a1a2e;color:#aaa}
+
+/* ===== 打印优化 ===== */
+@media print{
+  body{background:#fff;color:#000}
+  .hdr,nav,#mainNav,.db-backbar,.pa-export-btns,.pa-ocr-box{display:none !important}
+  .page{display:block !important}
+  #page-dashboard{display:none !important}
+  #page-analysis{display:block !important}
+  .pa-section-card{box-shadow:none;border:1px solid #ddd;break-inside:avoid;margin-bottom:10px}
+  .card{box-shadow:none;border:1px solid #ddd;break-inside:avoid}
+  body.dark .pa-section-card,body.dark .card{background:#fff;color:#000}
+  .pa-stat-box{background:#f8f9fa !important;color:#000 !important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .pa-progress-bar{background:#c41a1a !important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .pa-timeline-item::before{background:#c41a1a !important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
 </style>
 
 </body>
