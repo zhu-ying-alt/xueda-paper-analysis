@@ -274,7 +274,7 @@ body.dark .modal-footer .btn-cancel{background:#3a3a5a;color:#ccc}
           <option>安徽</option><option>江西</option><option>山西</option><option>广西</option><option>云南</option>
           <option>贵州</option><option>黑龙江</option><option>吉林</option><option>甘肃</option><option>内蒙古</option>
           <option>新疆</option><option>西藏</option><option>青海</option><option>宁夏</option><option>海南</option>
-          <option>天津</option><option>全国</option>
+          <option>天津</option><option>全国</option><option>全国新一卷</option>
         </select>
       </div>
       <div class="form-row">
@@ -370,7 +370,7 @@ function guessMetaFromName(name) {
   if (!name) return meta;
   var n = name.toLowerCase();
   // Province keywords
-  var provinces = ['北京','上海','广东','江苏','浙江','山东','河南','河北','湖南','湖北','四川','重庆','陕西','辽宁','福建','安徽','江西','山西','广西','云南','贵州','黑龙江','吉林','甘肃','内蒙古','新疆','西藏','青海','宁夏','海南','天津','全国'];
+  var provinces = ['北京','上海','广东','江苏','浙江','山东','河南','河北','湖南','湖北','四川','重庆','陕西','辽宁','福建','安徽','江西','山西','广西','云南','贵州','黑龙江','吉林','甘肃','内蒙古','新疆','西藏','青海','宁夏','海南','天津','全国新一卷','全国'];
   for (var i=0; i<provinces.length; i++) { if (n.indexOf(provinces[i]) >= 0) { meta.province = provinces[i]; break; } }
   // Subject keywords
   var subjects = ['语文','数学','英语','物理','化学','生物','政治','历史','地理'];
@@ -393,9 +393,22 @@ function updateFilterOptions() {
   var curP = pSel.value, curS = sSel.value;
   var provinces = getUniqueValues('province');
   var subjects = getUniqueValues('subject');
-  pSel.innerHTML = '<option value="all">全部省份</option>' + provinces.map(function(v){ return '<option value="'+v+'">'+v+'</option>'; }).join('');
+  // 预设常用省份/卷型选项，确保即使用户未上传也能看到
+  var presetProvinces = ['全国新一卷','全国'];
+  var allProvinces = {};
+  presetProvinces.forEach(function(v){ allProvinces[v] = true; });
+  provinces.forEach(function(v){ allProvinces[v] = true; });
+  var provinceList = Object.keys(allProvinces).sort(function(a,b){
+    // 让全国新一卷和全国排在前面
+    if (a === '全国新一卷') return -1;
+    if (b === '全国新一卷') return 1;
+    if (a === '全国') return -1;
+    if (b === '全国') return 1;
+    return a.localeCompare(b, 'zh-CN');
+  });
+  pSel.innerHTML = '<option value="all">全部省份</option>' + provinceList.map(function(v){ return '<option value="'+v+'">'+v+'</option>'; }).join('');
   sSel.innerHTML = '<option value="all">全部学科</option>' + subjects.map(function(v){ return '<option value="'+v+'">'+v+'</option>'; }).join('');
-  pSel.value = provinces.indexOf(curP) >= 0 ? curP : 'all';
+  pSel.value = provinceList.indexOf(curP) >= 0 ? curP : 'all';
   sSel.value = subjects.indexOf(curS) >= 0 ? curS : 'all';
 }
 
@@ -457,15 +470,8 @@ function openLibraryItem(id) {
     '<span>' + (item.grade || '高中') + ' · ' + (item.subject || '未知学科') + '</span>' +
     '<span>' + (item.name || '未命名细目表') + '</span>';
   document.getElementById('dbMeta').innerHTML = metaHtml;
-  document.getElementById('fName').textContent = item.name || '未命名细目表';
-  document.getElementById('library-view').style.display = 'none';
-  document.getElementById('dashboard-view').style.display = 'block';
-  document.getElementById('resetBtn').style.display = 'inline-block';
-  // Clear existing charts and show dashboard
   filter = {mod:'all', star:'all', year:'all'};
-  showDashboardUI();
-  updateAllCharts();
-  setTimeout(function(){ Object.keys(charts).forEach(function(id){ if(charts[id]) charts[id].resize(); }); }, 100);
+  showDashboard(item.name || '未命名细目表');
 }
 
 function showDashboardUI() {
