@@ -342,6 +342,7 @@ function loadLibrary(cb) {
   req.onsuccess = function() {
     library = req.result || [];
     library.sort(function(a,b){ return b.date - a.date; });
+    paUpdateProvinceOptions();
     if(cb) cb(library);
   };
   req.onerror = function() { if(cb) cb([]); };
@@ -1172,6 +1173,9 @@ function switchPage(page, btn){
   if(page==='dashboard' && typeof charts !== 'undefined'){
     setTimeout(function(){for(var k in charts) if(charts[k]) charts[k].resize();}, 100);
   }
+  if(page==='analysis'){
+    paUpdateProvinceOptions();
+  }
 }
 
 // ===== PA: Image Upload (initialized on DOMContentLoaded) =====
@@ -1281,25 +1285,159 @@ function paProcessImage(idx){
   }
 }
 
+
+// ===== PA: Match library table for course planning =====
+function paUpdateProvinceOptions(){
+  var sel = document.getElementById('paProvince');
+  if(!sel) return;
+  var cur = sel.value;
+  var list = ['自动匹配'];
+  var presets = ['全国新二卷','全国新一卷','全国'];
+  presets.forEach(function(p){ if(list.indexOf(p) < 0) list.push(p); });
+  library.forEach(function(item){ if(item.province && list.indexOf(item.province) < 0) list.push(item.province); });
+  sel.innerHTML = list.map(function(p){ return '<option value="' + (p==='自动匹配'?'':p) + '">' + p + '</option>'; }).join('');
+  var exists = Array.from(sel.options).some(function(o){ return o.value === cur; });
+  sel.value = exists ? cur : '';
+}
+
+function paFindMatchedTable(grade, subject, province){
+  if(!library || library.length === 0) return null;
+  var matches = library.filter(function(item){
+    return item.grade === grade && item.subject === subject;
+  });
+  if(matches.length === 0) return null;
+  if(province){
+    var exact = matches.filter(function(item){ return item.province === province; });
+    if(exact.length > 0) return exact[0];
+  }
+  return matches[0];
+}
+
+function paBuildModMapFromTable(item){
+  var map = {};
+  var rows = item && item.parsedData && item.parsedData.rows ? item.parsedData.rows : [];
+  rows.forEach(function(r){
+    var mod = r.module || '未分类模块';
+    if(!map[mod]) map[mod] = { hours:0, kps:[], weight:0, count:0, starSum:0 };
+    map[mod].hours += (r.period || 0);
+    map[mod].kps.push(r.kp || '');
+    map[mod].count += 1;
+    var star = getStarNum(r.star);
+    map[mod].starSum += star;
+    var w = 0;
+    if(r.yvals && r.yvals.length){
+      var sum = 0, n = 0;
+      r.yvals.forEach(function(v){ var pv = parseWeight(v); if(pv > 0){ sum += pv; n++; } });
+      w = n > 0 ? sum / n : 0;
+    }
+    map[mod].weight += w;
+  });
+  var hasHours = false;
+  Object.keys(map).forEach(function(mod){ if(map[mod].hours > 0) hasHours = true; });
+  if(!hasHours){
+    Object.keys(map).forEach(function(mod){
+      map[mod].hours = Math.max(1, Math.round(map[mod].weight * 0.3));
+    });
+  }
+  Object.keys(map).forEach(function(mod){
+    var m = map[mod];
+    if(m.hours <= 0) m.hours = 1;
+    var topKps = m.kps.filter(function(k){ return k; }).slice(0, 3).join('、') || '核心知识点';
+    var avgStar = m.count > 0 ? (m.starSum / m.count).toFixed(1) : '-';
+    m.suggestion = '该模块包含' + m.count + '个知识细目，平均难度' + avgStar + '星。重点突破：' + topKps + '。建议结合真题进行限时训练，建立典型解题模型。';
+  });
+  return map;
+}
+
+function paBuildModuleListFromTable(item, n){
+  var map = paBuildModMapFromTable(item);
+  var arr = Object.keys(map).map(function(mod){ return { module: mod, hours: map[mod].hours, weight: map[mod].weight, suggestion: map[mod].suggestion }; });
+  arr.sort(function(a, b){ return b.hours - a.hours || b.weight - a.weight; });
+  return arr.slice(0, n || 4);
+}
+
+function paBuildQuestionsFromTable(item, totalScore, currentScore){
+  var rows = item && item.parsedData && item.parsedData.rows ? item.parsedData.rows : [];
+  if(rows.length === 0) return [];
+  var weights = rows.map(function(r){
+    if(!r.yvals || r.yvals.length === 0) return 0;
+    var sum = 0, n = 0;
+    r.yvals.forEach(function(v){ var pv = parseWeight(v); if(pv > 0){ sum += pv; n++; } });
+    return n > 0 ? sum / n : 0;
+  });
+  var isWeight = item.parsedData.isWeight && weights.some(function(w){ return w > 0; });
+  var totalWeight = weights.reduce(function(a, b){ return a + b; }, 0);
+  var questions = [];
+  rows.forEach(function(r, i){
+    var star = getStarNum(r.star);
+    var weight = weights[i] || 0;
+    var score;
+    if(isWeight && totalWeight > 0){
+      score = Math.max(1, Math.round(totalScore * weight / totalWeight));
+    } else {
+      score = Math.max(1, Math.round(totalScore / rows.length));
+    }
+    var prob = star >= 5 ? 0.2 : (star >= 4 ? 0.4 : (star >= 3 ? 0.6 : (star >= 2 ? 0.75 : 0.9)));
+    if(star === 0) prob = 0.7;
+    var obtained = Math.min(score, Math.max(0, Math.round(score * prob)));
+    questions.push({ no: i+1, score: score, obtained: obtained, knowledge: r.kp || '', module: r.module || '未分类模块' });
+  });
+  // Adjust total obtained to match the student's current score if provided
+  var target = currentScore > 0 ? currentScore : Math.round(totalScore * (0.55 + Math.random() * 0.25));
+  var currentGot = questions.reduce(function(a, q){ return a + q.obtained; }, 0);
+  if(target !== currentGot && totalScore > 0){
+    var diff = target - currentGot;
+    var idxs = questions.map(function(_, i){ return i; });
+    if(diff > 0){
+      idxs.sort(function(a, b){ return (questions[a].score - questions[a].obtained) - (questions[b].score - questions[b].obtained); });
+    } else {
+      idxs.sort(function(a, b){ return questions[a].obtained - questions[b].obtained; });
+    }
+    var absDiff = Math.abs(diff);
+    for(var i = 0; i < idxs.length && absDiff > 0; i++){
+      var qi = idxs[i];
+      var q = questions[qi];
+      var room = diff > 0 ? q.score - q.obtained : q.obtained;
+      var delta = Math.min(absDiff, room);
+      if(diff > 0) q.obtained += delta; else q.obtained -= delta;
+      absDiff -= delta;
+    }
+  }
+  return questions;
+}
+
 // ===== PA: Render Analysis Result =====
 function paRenderResult(ocrResults){
   var totalScore = parseInt(document.getElementById('paTotalScore').value) || 150;
   var subject = document.getElementById('paSubject').value;
+  var province = document.getElementById('paProvince').value || '';
   var info = paGetStudentInfo();
-  // Prefer current score if user entered, otherwise use OCR-derived mock
   var fullText = ocrResults.map(function(r){ return r.text; }).join('\n');
   console.log('OCR Full Text:', fullText.substring(0, 500));
 
-  var questions = PA_MOCK_QUESTIONS[subject] || PA_MOCK_QUESTIONS['数学'];
-  // If user entered current score, scale obtained; otherwise random 55%-80%
-  var obtained = info.currentScore > 0 ? info.currentScore : Math.round(totalScore * (0.55 + Math.random()*0.25));
-  if (obtained > totalScore) obtained = totalScore;
+  // Try to match a library table for this grade / subject / province
+  var matchedItem = paFindMatchedTable(info.grade, subject, province);
+  var questions;
+  if(matchedItem && matchedItem.parsedData && matchedItem.parsedData.rows && matchedItem.parsedData.rows.length > 0){
+    questions = paBuildQuestionsFromTable(matchedItem, totalScore, info.currentScore);
+  } else {
+    questions = PA_MOCK_QUESTIONS[subject] || PA_MOCK_QUESTIONS['数学'];
+  }
+
+  // Compute obtained score from the generated / mock questions
+  var obtained = questions.reduce(function(a, q){ return a + q.obtained; }, 0);
+  // If user entered a current score and we are using mock questions, use the entered score
+  if(info.currentScore > 0 && !(matchedItem && matchedItem.parsedData && matchedItem.parsedData.rows.length > 0)){
+    obtained = info.currentScore;
+  }
+  if(obtained > totalScore) obtained = totalScore;
 
   var result = {
     subject: subject,
     totalScore: totalScore,
     obtainedScore: obtained,
-    questions: questions
+    questions: questions,
+    matchedItem: matchedItem
   };
   var wrongQ = questions.filter(function(q){ return q.obtained < q.score; });
   var accuracy = ((obtained / totalScore) * 100).toFixed(1);
@@ -1317,6 +1455,21 @@ function paRenderResult(ocrResults){
   html += '<div style="flex:1;min-width:200px;">分析老师：<b>' + info.teacher + '</b> · 日期：<b>' + info.date + '</b></div>';
   html += '<div style="flex:1;min-width:200px;">当前分数：<b>' + obtained + '分</b> · 目标分数：<b>' + (info.targetScore || '-') + '分</b> · 目标大学：<b>' + info.targetSchool + '</b></div>';
   html += '</div></div>';
+
+  // 1.5 细目表匹配信息
+  if(matchedItem){
+    html += '<div class="pa-section-card" style="border-left:4px solid #34a853;">';
+    html += '<div style="font-size:13px;color:#34a853;font-weight:700;margin-bottom:6px;">✅ 已匹配到双向细目表</div>';
+    html += '<div style="font-size:12px;color:#555;line-height:1.8;">';
+    html += '《' + (matchedItem.province || '未知') + ' · ' + matchedItem.grade + ' · ' + matchedItem.subject + '》';
+    html += '（' + (matchedItem.name || '未命名细目表') + '）';
+    html += ' · 知识点 <b>' + matchedItem.parsedData.rows.length + '</b> 个';
+    html += '</div></div>';
+  } else {
+    html += '<div class="pa-section-card" style="border-left:4px solid #e8730a;">';
+    html += '<div style="font-size:13px;color:#e8730a;font-weight:700;margin-bottom:6px;">⚠️ 未匹配到双向细目表</div>';
+    html += '<div style="font-size:12px;color:#555;line-height:1.8;">当前信息库中未找到 ' + info.grade + subject + ' 的细目表，课时规划将使用默认模板。请先前往“双向细目表信息”页面上传对应细目表。</div></div>';
+  }
 
   // 2. Score overview
   html += '<div class="pa-section-card">';
@@ -1404,7 +1557,7 @@ function paRenderResult(ocrResults){
   html += '<div class="pa-export-btns"><button onclick="paShowStep4()" class="btn btn-primary">查看提分方案</button><button onclick="paReset()" class="btn btn-secondary">重新分析</button></div>';
 
   document.getElementById('pa-step3').innerHTML = html;
-  window._paResult = { result: result, wrongQ: wrongQ, info: info };
+  window._paResult = { result: result, wrongQ: wrongQ, info: info, matchedItem: matchedItem };
 }
 
 // ===== Helpers for paper analysis =====
@@ -1507,7 +1660,10 @@ function paShowStep4(){
   var gap = Math.max(0, info.targetScore - obtained);
   var topModules = paGetTopWeakModules(wrongQ, 4);
 
-  var modMap = {
+  var matchedItem = data.matchedItem;
+  var modMap = paBuildModMapFromTable(matchedItem);
+  // Fallback math suggestions for modules not in the table
+  var fallbackMap = {
     '集合与常用逻辑用语':{h:2,s:'集合考点简单，建议限时训练确保不丢分。重点掌握集合的交并补运算。'},
     '函数概念与基本初等函数':{h:6,s:'函数是核心模块，建议系统复习函数性质（单调性、奇偶性、周期性），加强综合题训练。'},
     '三角函数与解三角形':{h:5,s:'三角函数题型固定，熟练掌握恒等变换公式，注意多解情况和象限符号。'},
@@ -1522,16 +1678,23 @@ function paShowStep4(){
     '概率':{h:4,s:'注重理解概念，多做真题熟悉常见模型。'},
     '统计':{h:3,s:'重点掌握抽样方法、频率分布直方图、回归分析。'}
   };
+  Object.keys(fallbackMap).forEach(function(mod){ if(!modMap[mod]){ modMap[mod] = { hours: fallbackMap[mod].h, suggestion: fallbackMap[mod].s }; } });
 
   var ms = [], totalH = 0;
-  if (topModules.length === 0) {
+  if (topModules.length === 0 && matchedItem) {
+    var topTableMods = paBuildModuleListFromTable(matchedItem, 4);
+    topTableMods.forEach(function(m){
+      ms.push({module: m.module, hours: m.hours, suggestion: m.suggestion});
+      totalH += m.hours;
+    });
+  } else if (topModules.length === 0) {
     ms = [{module:'整体提升',hours:10,suggestion:'当前成绩较好，建议保持优势同时查漏补缺，重点突破压轴题。'}];
     totalH = 10;
   } else {
     topModules.forEach(function(m){
-      var inf = modMap[m.module] || {h:3,s:'建议系统复习该模块基础知识，加强典型题训练。'};
-      ms.push({module:m.module, hours:inf.h, suggestion:inf.s});
-      totalH += inf.h;
+      var inf = modMap[m.module] || {hours:3,suggestion:'建议系统复习该模块基础知识，加强典型题训练。'};
+      ms.push({module:m.module, hours:inf.hours, suggestion:inf.suggestion});
+      totalH += inf.hours;
     });
   }
   var target = Math.min(obtained + Math.round(totalH * 0.8), totalScore);
@@ -1545,6 +1708,7 @@ function paShowStep4(){
   html += '<div class="pa-section-title"><span class="num">1</span>考情透视：知己知彼，掌握格局</div>';
   html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:14px;">';
   html += '<div style="background:#f8f9fa;padding:12px 14px;border-radius:10px;"><b style="font-size:13px;color:#c41a1a">命题趋势</b><p style="font-size:12px;color:#666;margin-top:6px;line-height:1.6;">' + info.subject + '学科强调知识点交叉融合，注重新情境应用与综合能力考查。</p></div>';
+  html += '<div style="background:#f8f9fa;padding:12px 14px;border-radius:10px;"><b style="font-size:13px;color:#c41a1a">细目表依据</b><p style="font-size:12px;color:#666;margin-top:6px;line-height:1.6;">' + (matchedItem ? '已匹配《' + (matchedItem.province || '未知') + ' · ' + matchedItem.grade + ' · ' + matchedItem.subject + '》细目表，课时规划与模块训练建议均依据该表数据生成。' : '未匹配到对应细目表，当前规划使用默认模板，建议上传对应细目表后重新分析。') + '</p></div>';
   html += '<div style="background:#f8f9fa;padding:12px 14px;border-radius:10px;"><b style="font-size:13px;color:#c41a1a">核心策略</b><p style="font-size:12px;color:#666;margin-top:6px;line-height:1.6;">基础题30%保分 + 中档题60%突破 + 难题10%量力 = 高效提分</p></div>';
   html += '<div style="background:#f8f9fa;padding:12px 14px;border-radius:10px;"><b style="font-size:13px;color:#c41a1a">当前定位</b><p style="font-size:12px;color:#666;margin-top:6px;line-height:1.6;">得分率' + ((obtained/totalScore)*100).toFixed(1) + '%，距目标差' + gap + '分，重点提升空间明确。</p></div>';
   html += '</div>';
@@ -1647,7 +1811,12 @@ function paExportWord(){
   var info = data.info;
   var result = data.result;
   var wrongQ = data.wrongQ;
+  var matchedItem = data.matchedItem;
   var topModules = paGetTopWeakModules(wrongQ, 4);
+  var modMap = matchedItem ? paBuildModMapFromTable(matchedItem) : {};
+  var totalH = 0;
+  topModules.forEach(function(m){ totalH += (modMap[m.module] ? modMap[m.module].hours : 3); });
+  if(totalH === 0) totalH = 10;
   var html = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><title>试卷分析报告</title><style>body{font-family:"Microsoft YaHei",sans-serif;font-size:14px;line-height:1.6;color:#333}h1{font-size:20px;color:#c41a1a}h2{font-size:16px;color:#c41a1a;border-left:4px solid #c41a1a;padding-left:8px}table{border-collapse:collapse;width:100%;margin:10px 0}td,th{border:1px solid #ccc;padding:6px;font-size:12px}th{background:#f0f0f0}.red{color:#c41a1a}.box{background:#f8f9fa;padding:10px;margin:8px 0;border-radius:6px}</style></head><body>';
   html += '<h1>' + (info.name || '张同学') + '试卷分析报告</h1>';
   html += '<p><b>学大教育 · 一对一个性化辅导</b></p>';
@@ -1659,26 +1828,44 @@ function paExportWord(){
   html += '<tr><th>目标大学</th><td>' + info.targetSchool + '</td><th>辅导期望</th><td>' + info.expectation + '</td></tr></table>';
   html += '<h2>二、试卷整体得分概述</h2>';
   html += '<p>试卷总分：<b>' + result.totalScore + '</b>，本次得分：<b>' + result.obtainedScore + '</b>，得分率：<b>' + ((result.obtainedScore/result.totalScore)*100).toFixed(1) + '%</b></p>';
-  html += '<h2>三、知识模块失分诊断</h2>';
+  html += '<h2>三、细目表依据</h2>';
+  if(matchedItem){
+    html += '<p>已匹配《' + (matchedItem.province || '未知') + ' · ' + matchedItem.grade + ' · ' + matchedItem.subject + '》细目表（' + (matchedItem.name || '未命名') + '），共 ' + matchedItem.parsedData.rows.length + ' 个知识细目。以下课时规划和模块建议均依据该细目表数据生成。</p>';
+  } else {
+    html += '<p>未匹配到对应细目表，使用默认模板进行规划。建议上传对应细目表后重新分析。</p>';
+  }
+  html += '<h2>四、知识模块失分诊断</h2>';
   if(topModules.length === 0){
     html += '<p>暂无明显薄弱模块。</p>';
   } else {
-    html += '<table><tr><th>薄弱模块</th><th>错题数</th></tr>';
-    topModules.forEach(function(m){ html += '<tr><td>' + m.module + '</td><td>' + m.count + '</td></tr>'; });
+    html += '<table><tr><th>薄弱模块</th><th>错题数</th><th>建议课时</th></tr>';
+    topModules.forEach(function(m){ html += '<tr><td>' + m.module + '</td><td>' + m.count + '</td><td>' + (modMap[m.module] ? modMap[m.module].hours : '-') + '</td></tr>'; });
     html += '</table>';
   }
-  html += '<h2>四、学生学情分析</h2>';
+  html += '<h2>五、分模块课时规划</h2>';
+  if(topModules.length === 0){
+    html += '<p>整体提升建议：10课时。</p>';
+  } else {
+    html += '<table><tr><th>模块</th><th>课时</th><th>训练建议</th></tr>';
+    topModules.forEach(function(m){
+      var inf = modMap[m.module] || {hours:3, suggestion:'建议系统复习该模块基础知识，加强典型题训练。'};
+      html += '<tr><td>' + m.module + '</td><td>' + inf.hours + '</td><td>' + inf.suggestion + '</td></tr>';
+    });
+    html += '<tr><th>合计</th><th>' + totalH + '</th><th> </th></tr>';
+    html += '</table>';
+  }
+  html += '<h2>六、学生学情分析</h2>';
   html += '<div class="box"><b>学习能力：</b>' + info.ability + '</div>';
   html += '<div class="box"><b>学习习惯：</b>' + info.habit + '</div>';
   html += '<div class="box"><b>在校情况：</b>' + info.schoolStatus + '</div>';
   html += '<div class="box"><b>在家情况：</b>' + info.homeStatus + '</div>';
   html += '<div class="box"><b>学习时长：</b>' + info.studyHours + '</div>';
   html += '<div class="box"><b>学习意愿：</b>' + info.motivation + '</div>';
-  html += '<h2>五、分阶段核心课时规划建议</h2>';
+  html += '<h2>七、分阶段核心课时规划建议</h2>';
   html += '<table><tr><th>阶段</th><th>课时</th><th>核心目标</th></tr>';
-  html += '<tr><td>基础夯实</td><td>35%</td><td>补齐基础短板，基础题得分率90%以上</td></tr>';
-  html += '<tr><td>中档提升</td><td>45%</td><td>强化解题模型，中档题得分率70%</td></tr>';
-  html += '<tr><td>强化冲刺</td><td>20%</td><td>冲刺高分，规范答题与限时训练</td></tr></table>';
+  html += '<tr><td>基础夯实</td><td>' + Math.round(totalH * 0.35) + '</td><td>补齐基础短板，基础题得分率90%以上</td></tr>';
+  html += '<tr><td>中档提升</td><td>' + Math.round(totalH * 0.45) + '</td><td>强化解题模型，中档题得分率70%</td></tr>';
+  html += '<tr><td>强化冲刺</td><td>' + Math.round(totalH * 0.20) + '</td><td>冲刺高分，规范答题与限时训练</td></tr></table>';
   html += '<p>本报告由学大教育试卷智能分析系统生成，仅供教学参考。</p>';
   html += '</body></html>';
   var blob = new Blob(['\ufeff', html], {type:'application/msword'});
@@ -1769,6 +1956,7 @@ function initApp(){
   initDB(function(){
     updateFilterOptions();
     renderLibrary();
+    paUpdateProvinceOptions();
   });
   initLibraryUpload();
   paInitUpload();
@@ -1826,6 +2014,12 @@ if(document.readyState === 'loading'){
           <label>分析科目</label>
           <select id="paSubject">
             <option>数学</option><option>语文</option><option>英语</option><option>物理</option><option>化学</option><option>生物</option><option>历史</option><option>地理</option><option>政治</option>
+          </select>
+        </div>
+        <div class="pa-form-field">
+          <label>省份 / 卷型</label>
+          <select id="paProvince">
+            <option value="">自动匹配</option>
           </select>
         </div>
         <div class="pa-form-field">
