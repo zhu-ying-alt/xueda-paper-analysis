@@ -1185,11 +1185,19 @@ function paInitUpload(){
     return;
   }
   console.log('paInitUpload: binding events');
+  // 点击上传区域触发文件选择（修复点击无响应）
+  area.addEventListener('click', function(e){
+    if(e.target !== input){
+      input.value = '';
+      input.click();
+    }
+  });
   input.addEventListener('change', function(){
     var files = Array.from(this.files);
     files.forEach(function(f){ paImages.push(f); });
     paRenderImages();
     document.getElementById('paStartBtn').disabled = (paImages.length===0);
+    this.value = '';
   });
   area.addEventListener('dragover', function(e){ e.preventDefault(); this.style.borderColor='#c41a1a'; });
   area.addEventListener('dragleave', function(){ this.style.borderColor='#ddd'; });
